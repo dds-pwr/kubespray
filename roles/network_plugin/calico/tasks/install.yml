@@ -6,29 +6,6 @@
     mode: 0755
     remote_src: yes
 
-- name: Calico | Check if host has NetworkManager
-  # noqa 303 Should we use service_facts for this?
-  command: systemctl show NetworkManager
-  register: nm_check
-  failed_when: false
-  changed_when: false
-
-- name: Calico | Ensure NetworkManager conf.d dir
-  file:
-    path: "/etc/NetworkManager/conf.d"
-    state: directory
-    recurse: yes
-  when: nm_check.rc == 0
-
-- name: Calico | Prevent NetworkManager from managing Calico interfaces
-  copy:
-    content: |
-      [keyfile]
-      unmanaged-devices=interface-name:cali*;interface-name:tunl*;interface-name:vxlan.calico
-    dest: /etc/NetworkManager/conf.d/calico.conf
-  when: nm_check.rc == 0
-  notify: Calico | Reload NetworkManager
-
 - name: Calico | Write Calico cni config
   template:
     src: "cni-calico.conflist.j2"
@@ -108,37 +85,39 @@
     - 'calico_conf.stdout == "0"'
     - calico_pool_cidr is defined
 
-- name: Calico | Create calico manifests for kdd
-  template:
-    src: "{{ item.file }}.j2"
-    dest: "{{ kube_config_dir }}/{{ item.file }}"
-  with_items:
-    - {name: calico, file: kdd-crds.yml, type: kdd}
-  register: calico_node_kdd_manifest
+- block:
+    - name: Calico | Remove unwanted annotations and creationTimestamp keys from metadata in Calico manifests
+      # noqa 303 - sed avoids using nested loop
+      shell: >-
+        sed -E -i
+        -e '/^\s{2,4}creationTimestamp: null$/d'
+        -e '/^\s{2,4}annotations:/{:1;/\(devel\)$/!{N;b 1}; /.*/d}'
+        {{ local_release_dir }}/calico-{{ calico_version }}-kdd-crds/*.yaml
+      when:
+        - calico_version is version('v3.17.0', '<')
+
+    - name: Calico | Create calico manifests for kdd
+      assemble:
+        src: "{{ local_release_dir }}/calico-{{ calico_version }}-kdd-crds"
+        dest: "{{ kube_config_dir }}/kdd-crds.yml"
+        regexp: ".*\\.yaml"
+        remote_src: true
+
+    - name: Calico | Create Calico Kubernetes datastore resources
+      kube:
+        kubectl: "{{ bin_dir }}/kubectl"
+        filename: "{{ kube_config_dir }}/kdd-crds.yml"
+        state: "latest"
+      when:
+        - inventory_hostname == groups['kube-master'][0]
   when:
     - inventory_hostname in groups['kube-master']
     - calico_datastore == "kdd"
 
-- name: Calico | Create Calico Kubernetes datastore resources
-  kube:
-    name: "{{ item.item.name }}"
-    namespace: "kube-system"
-    kubectl: "{{ bin_dir }}/kubectl"
-    resource: "{{ item.item.type }}"
-    filename: "{{ kube_config_dir }}/{{ item.item.file }}"
-    state: "latest"
-  with_items:
-    - "{{ calico_node_kdd_manifest.results }}"
-  when:
-    - inventory_hostname == groups['kube-master'][0]
-    - not item is skipped
-  loop_control:
-    label: "{{ item.item.file }}"
-
 - name: Calico | Configure calico network pool
   command:
     cmd: "{{ bin_dir }}/calicoctl.sh apply -f -"
-    stdin: "{{ stdin | to_json }}"
+    stdin: "{{ stdin is string | ternary(stdin, stdin|to_json) }}"
   vars:
     stdin: >
       { "kind": "IPPool",
@@ -173,7 +152,7 @@
 - name: Calico | Set up BGP Configuration
   command:
     cmd: "{{ bin_dir }}/calicoctl.sh apply -f -"
-    stdin: "{{ stdin | to_json }}"
+    stdin: "{{ stdin is string | ternary(stdin, stdin|to_json) }}"
   vars:
     stdin: >
       { "kind": "BGPConfiguration",
@@ -194,7 +173,7 @@
 - name: Calico | Configure peering with router(s) at global scope
   command:
     cmd: "{{ bin_dir }}/calicoctl.sh apply -f -"
-    stdin: "{{ stdin | to_json }}"
+    stdin: "{{ stdin is string | ternary(stdin, stdin|to_json) }}"
   vars:
     stdin: >
       {"apiVersion": "projectcalico.org/v3",
@@ -219,7 +198,8 @@
 - name: Calico | Configure peering with route reflectors at global scope
   command:
     cmd: "{{ bin_dir }}/calicoctl.sh apply -f -"
-    stdin: "{{ stdin | to_json }}"
+    # revert when it's already a string
+    stdin: "{{ stdin is string | ternary(stdin, stdin|to_json) }}"
   vars:
     stdin: >
       {"apiVersion": "projectcalico.org/v3",
@@ -244,7 +224,8 @@
 - name: Calico | Configure route reflectors to peer with each other
   command:
     cmd: "{{ bin_dir }}/calicoctl.sh apply -f -"
-    stdin: "{{ stdin | to_json }}"
+    # revert when it's already a string
+    stdin: "{{ stdin is string | ternary(stdin, stdin|to_json) }}"
   vars:
     stdin: >
       {"apiVersion": "projectcalico.org/v3",
@@ -302,7 +283,6 @@
     state: "latest"
   with_items:
     - "{{ calico_node_manifests.results }}"
-    - "{{ calico_node_kdd_manifest.results }}"
     - "{{ calico_node_typha_manifest.results }}"
   when:
     - inventory_hostname == groups['kube-master'][0]
@@ -320,7 +300,7 @@
 - name: Calico | Configure node asNumber for per node peering
   command:
     cmd: "{{ bin_dir }}/calicoctl.sh apply -f -"
-    stdin: "{{ stdin | to_json }}"
+    stdin: "{{ stdin is string | ternary(stdin, stdin|to_json) }}"
   vars:
     stdin: >
       {"apiVersion": "projectcalico.org/v3",
@@ -347,7 +327,7 @@
 - name: Calico | Configure peering with router(s) at node scope
   command:
     cmd: "{{ bin_dir }}/calicoctl.sh apply -f -"
-    stdin: "{{ stdin | to_json }}"
+    stdin: "{{ stdin is string | ternary(stdin, stdin|to_json) }}"
   vars:
     stdin: >
       {"apiVersion": "projectcalico.org/v3",

@@ -13,11 +13,17 @@
 - name: Check if kubelet.conf exists
   stat:
     path: "{{ kube_config_dir }}/kubelet.conf"
+    get_attributes: no
+    get_checksum: no
+    get_mime: no
   register: kubelet_conf
 
 - name: Check if kubeadm CA cert is accessible
   stat:
     path: "{{ kube_cert_dir }}/ca.crt"
+    get_attributes: no
+    get_checksum: no
+    get_mime: no
   register: kubeadm_ca_stat
   delegate_to: "{{ groups['kube-master'][0] }}"
   run_once: true
@@ -46,11 +52,6 @@
     kubeadm_token: "{{ temp_token.stdout }}"
   when: kubeadm_token is not defined
 
-- name: Get the kubeadm version
-  command: "{{ bin_dir }}/kubeadm version -o short"
-  register: kubeadm_output
-  changed_when: false
-
 - name: Set kubeadm api version to v1beta2
   set_fact:
     kubeadmConfig_api_version: v1beta2
@@ -64,7 +65,7 @@
 
 - name: Join to cluster if needed
   environment:
-    PATH: "{{ bin_dir }}:{{ ansible_env.PATH }}:/sbin"  # Make sure we can workaround RH / CentOS conservative path management
+    PATH: "{{ bin_dir }}:{{ ansible_env.PATH }}:/sbin"
   when: not is_kube_master and (not kubelet_conf.stat.exists)
   block:
 
